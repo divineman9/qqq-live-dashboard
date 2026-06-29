@@ -308,44 +308,60 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Table ──────────────────────────────────────────────────────────────────
-rows_html = ''
-for r in rows:
-    sym  = r['symbol']
-    name = NAMES.get(sym, sym)
-    sign = '+' if r['chg_pct'] > 0 else ''
-    price_color = 'gain' if r['chg_pct'] > 0 else ('loss' if r['chg_pct'] < 0 else 'neut')
-    rows_html += f"""
-    <tr>
-      <td><span class="rank-badge">{r['rank']}</span></td>
-      <td><span class="sym">{sym}</span><span class="co">{name}</span></td>
-      <td><span class="price {price_color}">${r['price']:,.2f}</span></td>
-      <td>{pct_html(r['chg_pct'])}</td>
-      <td><span class="vol">{fmt_vol(r['volume'])}</span></td>
-      <td>{rv_html(r['rel_vol'])}</td>
-      <td>{pct_html(r['wk'])}</td>
-      <td>{pct_html(r['mo'])}</td>
-    </tr>"""
+# ── Sortable Table via st.dataframe ────────────────────────────────────────
+df = pd.DataFrame([{
+    '#':        r['rank'],
+    'Symbol':   r['symbol'],
+    'Name':     NAMES.get(r['symbol'], r['symbol']),
+    'Price':    r['price'],
+    'Day Chg%': r['chg_pct'],
+    'Volume':   r['volume'],
+    'Rel Vol':  r['rel_vol'],
+    'Week %':   r['wk'],
+    'Month %':  r['mo'],
+} for r in rows])
 
-st.markdown(f"""
-<div class="table-wrap">
-<table class="holdings">
-  <thead>
-    <tr>
-      <th>#</th>
-      <th>Symbol</th>
-      <th>Price</th>
-      <th>Day Chg</th>
-      <th>Volume</th>
-      <th>Rel Vol</th>
-      <th>Week %</th>
-      <th>Month %</th>
-    </tr>
-  </thead>
-  <tbody>{rows_html}</tbody>
-</table>
-</div>
-""", unsafe_allow_html=True)
+def color_pct(val):
+    if pd.isna(val) or val == 0: return 'color: #94a3b8'
+    return 'color: #16a34a; font-weight:700' if val > 0 else 'color: #dc2626; font-weight:700'
+
+def color_rv(val):
+    if val >= 2.0:   return 'color: #dc2626; font-weight:700; background:#fef2f2; border-radius:4px'
+    if val >= 1.5:   return 'color: #ea580c; font-weight:700; background:#fff7ed; border-radius:4px'
+    if val >= 0.8:   return 'color: #2563eb; font-weight:700; background:#eff6ff; border-radius:4px'
+    return 'color: #94a3b8'
+
+styled = (
+    df.style
+    .map(color_pct,  subset=['Day Chg%', 'Week %', 'Month %'])
+    .map(color_rv,   subset=['Rel Vol'])
+    .format({
+        'Price':    '${:,.2f}',
+        'Day Chg%': '{:+.2f}%',
+        'Volume':   '{:,.0f}',
+        'Rel Vol':  '{:.2f}x',
+        'Week %':   '{:+.2f}%',
+        'Month %':  '{:+.2f}%',
+    })
+)
+
+st.dataframe(
+    styled,
+    use_container_width=True,
+    hide_index=True,
+    height=560,
+    column_config={
+        '#':        st.column_config.NumberColumn('#',        width=40),
+        'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
+        'Name':     st.column_config.TextColumn('Name',      width=160),
+        'Price':    st.column_config.TextColumn('Price',     width=90),
+        'Day Chg%': st.column_config.TextColumn('Day Chg',  width=90),
+        'Volume':   st.column_config.TextColumn('Volume',    width=100),
+        'Rel Vol':  st.column_config.TextColumn('Rel Vol',   width=80),
+        'Week %':   st.column_config.TextColumn('Wk %',      width=80),
+        'Month %':  st.column_config.TextColumn('Mo %',      width=80),
+    },
+)
 
 # ── Footer ─────────────────────────────────────────────────────────────────
 st.markdown(f"""
