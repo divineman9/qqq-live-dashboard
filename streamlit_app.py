@@ -309,12 +309,16 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── Sortable Table via st.dataframe ────────────────────────────────────────
+elapsed = elapsed_fraction()
+
 df = pd.DataFrame([{
     'Symbol':   r['symbol'],
     'Name':     NAMES.get(r['symbol'], r['symbol']),
     'Price':    r['price'],
     'Day Chg%': r['chg_pct'],
-    'Volume':   r['volume'],
+    'Volume':   r['volume'],          # raw int for sorting
+    'Vol (M)':  round(r['volume'] / 1_000_000, 2),  # display column
+    'vs Avg':   r['volume'] / (AVG_DAILY_VOL.get(r['symbol'], 1) * elapsed) if elapsed > 0 else 0,
     'Rel Vol':  r['rel_vol'],
     'Week %':   r['wk'],
     'Month %':  r['mo'],
@@ -330,18 +334,33 @@ def color_rv(val):
     if val >= 0.8:   return 'color: #2563eb; font-weight:700; background:#eff6ff; border-radius:4px'
     return 'color: #94a3b8'
 
+def color_vol(val):
+    # green = on pace to exceed avg, red = lagging behind avg
+    if val >= 1.0: return 'color: #16a34a; font-weight:700'
+    return 'color: #dc2626; font-weight:700'
+
 styled = (
-    df.style
-    .map(color_pct,  subset=['Day Chg%', 'Week %', 'Month %'])
-    .map(color_rv,   subset=['Rel Vol'])
+    df.drop(columns=['Volume', 'vs Avg'])   # hide raw columns used only for sort/color
+    .style
+    .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %'])
+    .map(color_rv,  subset=['Rel Vol'])
     .format({
         'Price':    '${:,.2f}',
         'Day Chg%': '{:+.2f}%',
-        'Volume':   '{:,.0f}',
+        'Vol (M)':  '{:.2f}M',
         'Rel Vol':  '{:.2f}x',
         'Week %':   '{:+.2f}%',
         'Month %':  '{:+.2f}%',
     })
+)
+
+# Color Vol (M) based on vs-avg ratio stored separately
+vs_avg_series = df['vs Avg']
+styled = styled.apply(
+    lambda col: ['color: #16a34a; font-weight:700' if vs_avg_series.iloc[i] >= 1.0
+                 else 'color: #dc2626; font-weight:700'
+                 for i in range(len(col))],
+    subset=['Vol (M)'], axis=0
 )
 
 st.dataframe(
@@ -350,14 +369,14 @@ st.dataframe(
     hide_index=True,
     height=560,
     column_config={
-        'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
-        'Name':     st.column_config.TextColumn('Name',      width=160),
-        'Price':    st.column_config.TextColumn('Price',     width=90),
-        'Day Chg%': st.column_config.TextColumn('Day Chg',  width=90),
-        'Volume':   st.column_config.TextColumn('Volume',    width=100),
-        'Rel Vol':  st.column_config.TextColumn('Rel Vol',   width=80),
-        'Week %':   st.column_config.TextColumn('Wk %',      width=80),
-        'Month %':  st.column_config.TextColumn('Mo %',      width=80),
+        'Symbol':   st.column_config.TextColumn('Symbol',   width=70),
+        'Name':     st.column_config.TextColumn('Name',     width=160),
+        'Price':    st.column_config.TextColumn('Price',    width=90),
+        'Day Chg%': st.column_config.TextColumn('Day Chg', width=90),
+        'Vol (M)':  st.column_config.TextColumn('Vol',     width=80),
+        'Rel Vol':  st.column_config.TextColumn('Rel Vol',  width=80),
+        'Week %':   st.column_config.TextColumn('Wk %',     width=80),
+        'Month %':  st.column_config.TextColumn('Mo %',     width=80),
     },
 )
 
