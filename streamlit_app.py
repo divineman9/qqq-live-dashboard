@@ -213,45 +213,53 @@ def rv_html(rv):
     return f'<span class="rv-badge {css}">{label}</span>'
 
 # ── Data fetch ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=60)
+ET_TZ = pytz.timezone('America/New_York')
+
+def _safe_tz_convert(idx):
+    if idx.tz is None:
+        return idx.tz_localize('UTC').tz_convert(ET_TZ)
+    return idx.tz_convert(ET_TZ)
+
+def _min_of_day(idx):
+    return idx.hour * 60 + idx.minute
+
+@st.cache_data(ttl=30)
 def fetch_quotes():
     elapsed = elapsed_fraction()
     rows = []
     tickers = yf.Tickers(' '.join(SYMBOLS))
     for sym in SYMBOLS:
         try:
-            t = tickers.tickers[sym]
+            t    = tickers.tickers[sym]
             info = t.fast_info
             h35  = t.history(period='35d', interval='1d')
-            # prepost=True captures pre-market + after-hours bars
-            h1d  = t.history(period='1d', interval='1m', prepost=True)
+            h1d  = t.history(period='2d', interval='1m', prepost=True)
 
             price = float(info.last_price or 0)
             prev  = float(info.previous_close or price)
 
-            # ── Pre-market: bars before 09:30 ET today ──
-            pre_chg = 0.0
-            pre_price = 0.0
-            pre_vol = 0
+            pre_chg = ah_chg = 0.0
+            pre_vol = ah_vol = volume = 0
+
             if not h1d.empty:
-                et_tz = pytz.timezone('America/New_York')
-                h1d.index = h1d.index.tz_convert(et_tz)
-                today = get_et().date()
-                pre_bars = h1d[
-                    (h1d.index.date == today) &
-                    (h1d.index.hour * 60 + h1d.index.minute < 9 * 60 + 30)
-                ]
-                reg_bars = h1d[
-                    (h1d.index.date == today) &
-                    (h1d.index.hour * 60 + h1d.index.minute >= 9 * 60 + 30)
-                ]
+                h1d.index = _safe_tz_convert(h1d.index)       # bug-fix: handle tz-naive
+                today     = get_et().date()
+                mins      = _min_of_day(h1d.index)
+                is_today  = pd.Series(h1d.index.date == today, index=h1d.index)
+
+                pre_bars = h1d[is_today & (mins <  9*60+30)]  # 04:00–09:29
+                reg_bars = h1d[is_today & (mins >= 9*60+30) & (mins < 16*60)]  # 09:30–15:59
+                ah_bars  = h1d[is_today & (mins >= 16*60)]    # 16:00–20:00
+
                 if not pre_bars.empty:
-                    pre_price = float(pre_bars['Close'].iloc[-1])
-                    pre_chg   = round((pre_price - prev) / prev * 100, 2) if prev else 0
-                    pre_vol   = int(pre_bars['Volume'].sum())
+                    pre_vol = int(pre_bars['Volume'].sum())
+                    pre_chg = round((float(pre_bars['Close'].iloc[-1]) - prev) / prev * 100, 2) if prev else 0
+
                 volume = int(reg_bars['Volume'].sum()) if not reg_bars.empty else 0
-            else:
-                volume = 0
+
+                if not ah_bars.empty:
+                    ah_vol  = int(ah_bars['Volume'].sum())
+                    ah_chg  = round((float(ah_bars['Close'].iloc[-1]) - prev) / prev * 100, 2) if prev else 0
 
             avg     = AVG_DAILY_VOL.get(sym, 1)
             rel_vol = volume / (avg * elapsed) if elapsed > 0 else 0
@@ -262,20 +270,22 @@ def fetch_quotes():
             rows.append({
                 'rank': RANKS.get(sym,99), 'symbol': sym,
                 'price': price, 'chg_pct': round((price-prev)/prev*100,2) if prev else 0,
-                'pre_price': pre_price, 'pre_chg': pre_chg, 'pre_vol': pre_vol,
+                'pre_chg': pre_chg, 'pre_vol': pre_vol,
+                'ah_chg':  ah_chg,  'ah_vol':  ah_vol,
                 'volume': volume, 'rel_vol': round(rel_vol,2),
+                'elapsed': elapsed,                            # carry elapsed to avoid drift
                 'wk': wk, 'mo': mo,
             })
         except Exception:
             rows.append({'rank':RANKS.get(sym,99),'symbol':sym,'price':0,'chg_pct':0,
-                         'pre_price':0,'pre_chg':0,'pre_vol':0,
-                         'volume':0,'rel_vol':0,'wk':0,'mo':0})
+                         'pre_chg':0,'pre_vol':0,'ah_chg':0,'ah_vol':0,
+                         'volume':0,'rel_vol':0,'elapsed':elapsed,'wk':0,'mo':0})
     return sorted(rows, key=lambda r: r['rank'])
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────
 try:
     from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=60_000, key='qqq_refresh')
+    st_autorefresh(interval=30_000, key='qqq_refresh')
 except ImportError:
     pass
 
@@ -291,7 +301,7 @@ st.markdown(f"""
 <div class="dash-header">
   <div>
     <div class="dash-title">📈 QQQ Top Holdings</div>
-    <div class="dash-sub">Live market dashboard · 15 symbols · auto-refreshes every 60s</div>
+    <div class="dash-sub">Live market dashboard · 15 symbols · auto-refreshes every 30s</div>
   </div>
   <div style="display:flex;align-items:center;gap:1.2rem;">
     <span class="et-time">🕐 {et_now.strftime('%I:%M:%S %p ET')}</span>
@@ -303,18 +313,17 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── KPI cards ──────────────────────────────────────────────────────────────
-gainers   = sorted(rows, key=lambda r: r['chg_pct'],  reverse=True)
-pre_movers = sorted(rows, key=lambda r: r['pre_chg'], reverse=True)
-best, worst = gainers[0], gainers[-1]
+gainers    = sorted(rows, key=lambda r: r['chg_pct'],  reverse=True)
+pre_movers = sorted(rows, key=lambda r: r['pre_chg'],  reverse=True)
+ah_movers  = sorted(rows, key=lambda r: r['ah_chg'],   reverse=True)
+best, worst    = gainers[0], gainers[-1]
 pre_best  = next((r for r in pre_movers if r['pre_chg'] != 0), pre_movers[0])
 pre_worst = next((r for r in reversed(pre_movers) if r['pre_chg'] != 0), pre_movers[-1])
+ah_best   = next((r for r in ah_movers  if r['ah_chg']  != 0), ah_movers[0])
 avg_rv = sum(r['rel_vol'] for r in rows) / len(rows)
 spikes = sum(1 for r in rows if r['rel_vol'] >= 2.0)
 
-best_cls     = 'kpi-gain' if best['chg_pct']   > 0 else 'kpi-loss'
-worst_cls    = 'kpi-gain' if worst['chg_pct']  > 0 else 'kpi-loss'
-pre_best_cls = 'kpi-gain' if pre_best['pre_chg']  > 0 else 'kpi-loss'
-pre_wrst_cls = 'kpi-gain' if pre_worst['pre_chg'] > 0 else 'kpi-loss'
+def cls(v): return 'kpi-gain' if v > 0 else 'kpi-loss'
 
 st.markdown(f"""
 <div class="kpi-row">
@@ -325,23 +334,28 @@ st.markdown(f"""
   </div>
   <div class="kpi-card">
     <div class="kpi-label">Top Gainer</div>
-    <div class="kpi-value {best_cls}">{best['symbol']}</div>
-    <div class="kpi-sub {best_cls}">{best['chg_pct']:+.2f}% today</div>
+    <div class="kpi-value {cls(best['chg_pct'])}">{best['symbol']}</div>
+    <div class="kpi-sub {cls(best['chg_pct'])}">{best['chg_pct']:+.2f}% today</div>
   </div>
   <div class="kpi-card">
     <div class="kpi-label">Top Loser</div>
-    <div class="kpi-value {worst_cls}">{worst['symbol']}</div>
-    <div class="kpi-sub {worst_cls}">{worst['chg_pct']:+.2f}% today</div>
+    <div class="kpi-value {cls(worst['chg_pct'])}">{worst['symbol']}</div>
+    <div class="kpi-sub {cls(worst['chg_pct'])}">{worst['chg_pct']:+.2f}% today</div>
   </div>
   <div class="kpi-card">
     <div class="kpi-label">Pre-Mkt Leader</div>
-    <div class="kpi-value {pre_best_cls}">{pre_best['symbol']}</div>
-    <div class="kpi-sub {pre_best_cls}">{pre_best['pre_chg']:+.2f}% pre-mkt</div>
+    <div class="kpi-value {cls(pre_best['pre_chg'])}">{pre_best['symbol']}</div>
+    <div class="kpi-sub {cls(pre_best['pre_chg'])}">{pre_best['pre_chg']:+.2f}% pre-mkt</div>
   </div>
   <div class="kpi-card">
     <div class="kpi-label">Pre-Mkt Laggard</div>
-    <div class="kpi-value {pre_wrst_cls}">{pre_worst['symbol']}</div>
-    <div class="kpi-sub {pre_wrst_cls}">{pre_worst['pre_chg']:+.2f}% pre-mkt</div>
+    <div class="kpi-value {cls(pre_worst['pre_chg'])}">{pre_worst['symbol']}</div>
+    <div class="kpi-sub {cls(pre_worst['pre_chg'])}">{pre_worst['pre_chg']:+.2f}% pre-mkt</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">After-Hours Leader</div>
+    <div class="kpi-value {cls(ah_best['ah_chg'])}">{ah_best['symbol']}</div>
+    <div class="kpi-sub {cls(ah_best['ah_chg'])}">{ah_best['ah_chg']:+.2f}% AH</div>
   </div>
   <div class="kpi-card">
     <div class="kpi-label">Avg Rel Vol</div>
@@ -351,8 +365,12 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Sortable Table via st.dataframe ────────────────────────────────────────
-elapsed = elapsed_fraction()
+# ── Filter + Table ─────────────────────────────────────────────────────────
+col_f1, col_f2 = st.columns([1, 3])
+with col_f1:
+    min_rv = st.selectbox('Min Rel Vol filter', [0.0, 0.5, 1.0, 1.5, 2.0], index=0,
+                          format_func=lambda x: f'≥ {x}x' if x > 0 else 'All')
+filtered = [r for r in rows if r['rel_vol'] >= min_rv] if min_rv > 0 else rows
 
 df = pd.DataFrame([{
     'Symbol':    r['symbol'],
@@ -361,13 +379,14 @@ df = pd.DataFrame([{
     'Pre Vol':   round(r['pre_vol'] / 1_000_000, 2),
     'Price':     r['price'],
     'Day Chg%':  r['chg_pct'],
-    'Volume':    r['volume'],
     'Vol (M)':   round(r['volume'] / 1_000_000, 2),
-    'vs Avg':    r['volume'] / (AVG_DAILY_VOL.get(r['symbol'], 1) * elapsed) if elapsed > 0 else 0,
+    'vs Avg':    r['rel_vol'],                           # already computed from same elapsed
     'Rel Vol':   r['rel_vol'],
+    'AH Chg%':   r['ah_chg'],
+    'AH Vol':    round(r['ah_vol'] / 1_000_000, 2),
     'Week %':    r['wk'],
     'Month %':   r['mo'],
-} for r in rows])
+} for r in filtered])
 
 def color_pct(val):
     if pd.isna(val) or val == 0: return 'color: #94a3b8'
@@ -383,9 +402,9 @@ def color_rv(val):
 vs_avg_series = df['vs Avg']
 
 styled = (
-    df.drop(columns=['Volume', 'vs Avg'])
+    df.drop(columns=['vs Avg'])
     .style
-    .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %', 'Pre Chg%'])
+    .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %', 'Pre Chg%', 'AH Chg%'])
     .map(color_rv,  subset=['Rel Vol'])
     .format({
         'Pre Chg%': '{:+.2f}%',
@@ -394,6 +413,8 @@ styled = (
         'Day Chg%': '{:+.2f}%',
         'Vol (M)':  '{:.2f}M',
         'Rel Vol':  '{:.2f}x',
+        'AH Chg%':  '{:+.2f}%',
+        'AH Vol':   '{:.2f}M',
         'Week %':   '{:+.2f}%',
         'Month %':  '{:+.2f}%',
     })
@@ -409,18 +430,20 @@ st.dataframe(
     styled,
     use_container_width=True,
     hide_index=True,
-    height=580,
+    height=560,
     column_config={
-        'Symbol':   st.column_config.TextColumn('Symbol',   width=70),
-        'Name':     st.column_config.TextColumn('Name',     width=150),
-        'Pre Chg%': st.column_config.TextColumn('Pre Chg', width=80),
-        'Pre Vol':  st.column_config.TextColumn('Pre Vol',  width=75),
-        'Price':    st.column_config.TextColumn('Price',    width=85),
-        'Day Chg%': st.column_config.TextColumn('Day Chg', width=85),
-        'Vol (M)':  st.column_config.TextColumn('Vol',     width=75),
-        'Rel Vol':  st.column_config.TextColumn('Rel Vol',  width=75),
-        'Week %':   st.column_config.TextColumn('Wk %',     width=72),
-        'Month %':  st.column_config.TextColumn('Mo %',     width=72),
+        'Symbol':   st.column_config.TextColumn('Symbol',   width=68),
+        'Name':     st.column_config.TextColumn('Name',     width=145),
+        'Pre Chg%': st.column_config.TextColumn('Pre Chg', width=75),
+        'Pre Vol':  st.column_config.TextColumn('Pre Vol',  width=68),
+        'Price':    st.column_config.TextColumn('Price',    width=82),
+        'Day Chg%': st.column_config.TextColumn('Day Chg', width=80),
+        'Vol (M)':  st.column_config.TextColumn('Vol',     width=68),
+        'Rel Vol':  st.column_config.TextColumn('Rel Vol',  width=70),
+        'AH Chg%':  st.column_config.TextColumn('AH Chg',  width=72),
+        'AH Vol':   st.column_config.TextColumn('AH Vol',   width=65),
+        'Week %':   st.column_config.TextColumn('Wk %',     width=68),
+        'Month %':  st.column_config.TextColumn('Mo %',     width=68),
     },
 )
 
