@@ -233,15 +233,16 @@ def fetch_quotes():
             if not h35.empty and len(h35) >= 6:
                 wk = round((price - float(h35['Close'].iloc[-6])) / float(h35['Close'].iloc[-6]) * 100, 2)
                 mo = round((price - float(h35['Close'].iloc[0]))  / float(h35['Close'].iloc[0])  * 100, 2)
+            sparkline = h35['Close'].round(2).tolist() if not h35.empty else []
             rows.append({
                 'rank': RANKS.get(sym,99), 'symbol': sym,
                 'price': price, 'chg_pct': round((price-prev)/prev*100,2) if prev else 0,
                 'volume': volume, 'rel_vol': round(rel_vol,2),
-                'wk': wk, 'mo': mo,
+                'wk': wk, 'mo': mo, 'sparkline': sparkline,
             })
         except Exception:
             rows.append({'rank':RANKS.get(sym,99),'symbol':sym,'price':0,'chg_pct':0,
-                         'volume':0,'rel_vol':0,'wk':0,'mo':0})
+                         'volume':0,'rel_vol':0,'wk':0,'mo':0,'sparkline':[]})
     return sorted(rows, key=lambda r: r['rank'])
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────
@@ -314,10 +315,11 @@ elapsed = elapsed_fraction()
 df = pd.DataFrame([{
     'Symbol':   r['symbol'],
     'Name':     NAMES.get(r['symbol'], r['symbol']),
+    'Trend':    r['sparkline'],
     'Price':    r['price'],
     'Day Chg%': r['chg_pct'],
-    'Volume':   r['volume'],          # raw int for sorting
-    'Vol (M)':  round(r['volume'] / 1_000_000, 2),  # display column
+    'Volume':   r['volume'],
+    'Vol (M)':  round(r['volume'] / 1_000_000, 2),
     'vs Avg':   r['volume'] / (AVG_DAILY_VOL.get(r['symbol'], 1) * elapsed) if elapsed > 0 else 0,
     'Rel Vol':  r['rel_vol'],
     'Week %':   r['wk'],
@@ -340,7 +342,7 @@ def color_vol(val):
     return 'color: #dc2626; font-weight:700'
 
 styled = (
-    df.drop(columns=['Volume', 'vs Avg'])   # hide raw columns used only for sort/color
+    df.drop(columns=['Volume', 'vs Avg'])   # Trend kept separately for column_config
     .style
     .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %'])
     .map(color_rv,  subset=['Rel Vol'])
@@ -356,6 +358,8 @@ styled = (
 
 # Color Vol (M) based on vs-avg ratio stored separately
 vs_avg_series = df['vs Avg']
+trend_series  = df['Trend']
+
 styled = styled.apply(
     lambda col: ['color: #16a34a; font-weight:700' if vs_avg_series.iloc[i] >= 1.0
                  else 'color: #dc2626; font-weight:700'
@@ -363,20 +367,25 @@ styled = styled.apply(
     subset=['Vol (M)'], axis=0
 )
 
+# Re-attach Trend column for LineChartColumn rendering
+display_df = styled.data.copy()
+display_df['Trend'] = trend_series.values
+
 st.dataframe(
-    styled,
+    display_df,
     use_container_width=True,
     hide_index=True,
-    height=560,
+    height=580,
     column_config={
-        'Symbol':   st.column_config.TextColumn('Symbol',   width=70),
-        'Name':     st.column_config.TextColumn('Name',     width=160),
-        'Price':    st.column_config.TextColumn('Price',    width=90),
-        'Day Chg%': st.column_config.TextColumn('Day Chg', width=90),
-        'Vol (M)':  st.column_config.TextColumn('Vol',     width=80),
-        'Rel Vol':  st.column_config.TextColumn('Rel Vol',  width=80),
-        'Week %':   st.column_config.TextColumn('Wk %',     width=80),
-        'Month %':  st.column_config.TextColumn('Mo %',     width=80),
+        'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
+        'Name':     st.column_config.TextColumn('Name',      width=155),
+        'Trend':    st.column_config.LineChartColumn('30d Trend', width='medium', y_min=None, y_max=None),
+        'Price':    st.column_config.TextColumn('Price',     width=90),
+        'Day Chg%': st.column_config.TextColumn('Day Chg',  width=90),
+        'Vol (M)':  st.column_config.TextColumn('Vol',      width=80),
+        'Rel Vol':  st.column_config.TextColumn('Rel Vol',   width=80),
+        'Week %':   st.column_config.TextColumn('Wk %',      width=80),
+        'Month %':  st.column_config.TextColumn('Mo %',      width=80),
     },
 )
 
