@@ -310,7 +310,6 @@ st.markdown(f"""
 
 # ── Sortable Table via st.dataframe ────────────────────────────────────────
 df = pd.DataFrame([{
-    '#':        r['rank'],
     'Symbol':   r['symbol'],
     'Name':     NAMES.get(r['symbol'], r['symbol']),
     'Price':    r['price'],
@@ -351,7 +350,6 @@ st.dataframe(
     hide_index=True,
     height=560,
     column_config={
-        '#':        st.column_config.NumberColumn('#',        width=40),
         'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
         'Name':     st.column_config.TextColumn('Name',      width=160),
         'Price':    st.column_config.TextColumn('Price',     width=90),
