@@ -365,29 +365,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Filter + Table ─────────────────────────────────────────────────────────
-col_f1, col_f2 = st.columns([1, 3])
-with col_f1:
-    min_rv = st.selectbox('Min Rel Vol filter', [0.0, 0.5, 1.0, 1.5, 2.0], index=0,
-                          format_func=lambda x: f'≥ {x}x' if x > 0 else 'All')
-filtered = [r for r in rows if r['rel_vol'] >= min_rv] if min_rv > 0 else rows
-
-df = pd.DataFrame([{
-    'Symbol':    r['symbol'],
-    'Name':      NAMES.get(r['symbol'], r['symbol']),
-    'Pre Chg%':  r['pre_chg'],
-    'Pre Vol':   round(r['pre_vol'] / 1_000_000, 2),
-    'Price':     r['price'],
-    'Day Chg%':  r['chg_pct'],
-    'Vol (M)':   round(r['volume'] / 1_000_000, 2),
-    'vs Avg':    r['rel_vol'],                           # already computed from same elapsed
-    'Rel Vol':   r['rel_vol'],
-    'AH Chg%':   r['ah_chg'],
-    'AH Vol':    round(r['ah_vol'] / 1_000_000, 2),
-    'Week %':    r['wk'],
-    'Month %':   r['mo'],
-} for r in filtered])
-
+# ── Helpers ────────────────────────────────────────────────────────────────
 def color_pct(val):
     if pd.isna(val) or val == 0: return 'color: #94a3b8'
     return 'color: #16a34a; font-weight:700' if val > 0 else 'color: #dc2626; font-weight:700'
@@ -398,54 +376,97 @@ def color_rv(val):
     if val >= 0.8:   return 'color: #2563eb; font-weight:700; background:#eff6ff; border-radius:4px'
     return 'color: #94a3b8'
 
-
-vs_avg_series = df['vs Avg']
-
-styled = (
-    df.drop(columns=['vs Avg'])
-    .style
-    .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %', 'Pre Chg%', 'AH Chg%'])
-    .map(color_rv,  subset=['Rel Vol'])
-    .format({
-        'Pre Chg%': '{:+.2f}%',
-        'Pre Vol':  '{:.2f}M',
-        'Price':    '${:,.2f}',
-        'Day Chg%': '{:+.2f}%',
-        'Vol (M)':  '{:.2f}M',
-        'Rel Vol':  '{:.2f}x',
-        'AH Chg%':  '{:+.2f}%',
-        'AH Vol':   '{:.2f}M',
-        'Week %':   '{:+.2f}%',
-        'Month %':  '{:+.2f}%',
-    })
-    .apply(
-        lambda col: ['color: #16a34a; font-weight:700' if vs_avg_series.iloc[i] >= 1.0
-                     else 'color: #dc2626; font-weight:700'
-                     for i in range(len(col))],
-        subset=['Vol (M)'], axis=0
+# ── Session selector + Rel Vol filter ──────────────────────────────────────
+ctrl_col, filt_col = st.columns([2, 1])
+with ctrl_col:
+    session = st.segmented_control(
+        'Session', ['🌅 Pre-Market', '📈 Live', '🌙 After Hours'],
+        default='📈 Live', label_visibility='collapsed'
     )
-)
+with filt_col:
+    min_rv = st.selectbox('Min Rel Vol', [0.0, 0.5, 1.0, 1.5, 2.0], index=0,
+                          format_func=lambda x: f'Rel Vol >= {x}x' if x > 0 else 'All Symbols')
 
-st.dataframe(
-    styled,
-    use_container_width=True,
-    hide_index=True,
-    height=560,
-    column_config={
-        'Symbol':   st.column_config.TextColumn('Symbol',   width=68),
-        'Name':     st.column_config.TextColumn('Name',     width=145),
-        'Pre Chg%': st.column_config.TextColumn('Pre Chg', width=75),
-        'Pre Vol':  st.column_config.TextColumn('Pre Vol',  width=68),
-        'Price':    st.column_config.TextColumn('Price',    width=82),
-        'Day Chg%': st.column_config.TextColumn('Day Chg', width=80),
-        'Vol (M)':  st.column_config.TextColumn('Vol',     width=68),
-        'Rel Vol':  st.column_config.TextColumn('Rel Vol',  width=70),
-        'AH Chg%':  st.column_config.TextColumn('AH Chg',  width=72),
-        'AH Vol':   st.column_config.TextColumn('AH Vol',   width=65),
-        'Week %':   st.column_config.TextColumn('Wk %',     width=68),
-        'Month %':  st.column_config.TextColumn('Mo %',     width=68),
-    },
-)
+filtered = [r for r in rows if r['rel_vol'] >= min_rv] if min_rv > 0 else rows
+
+# ── Build view per session ──────────────────────────────────────────────────
+if session == '🌅 Pre-Market':
+    data = sorted(filtered, key=lambda r: abs(r['pre_chg']), reverse=True)
+    df = pd.DataFrame([{
+        'Symbol':   r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
+        'Pre Chg%': r['pre_chg'], 'Pre Vol': round(r['pre_vol']/1e6, 2),
+        'Price':    r['price'],   'Day Chg%': r['chg_pct'],
+        'Week %':   r['wk'],      'Month %':  r['mo'],
+    } for r in data])
+    styled = (df.style
+        .map(color_pct, subset=['Pre Chg%', 'Day Chg%', 'Week %', 'Month %'])
+        .format({'Pre Chg%':'{:+.2f}%','Pre Vol':'{:.2f}M','Price':'${:,.2f}',
+                 'Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
+    col_cfg = {
+        'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
+        'Name':     st.column_config.TextColumn('Name',      width=160),
+        'Pre Chg%': st.column_config.TextColumn('Pre Chg%', width=90),
+        'Pre Vol':  st.column_config.TextColumn('Pre Vol',  width=82),
+        'Price':    st.column_config.TextColumn('Price',     width=88),
+        'Day Chg%': st.column_config.TextColumn('Day Chg%', width=88),
+        'Week %':   st.column_config.TextColumn('Wk %',      width=76),
+        'Month %':  st.column_config.TextColumn('Mo %',      width=76),
+    }
+
+elif session == '🌙 After Hours':
+    data = sorted(filtered, key=lambda r: abs(r['ah_chg']), reverse=True)
+    df = pd.DataFrame([{
+        'Symbol':  r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
+        'AH Chg%': r['ah_chg'], 'AH Vol': round(r['ah_vol']/1e6, 2),
+        'Price':   r['price'],  'Day Chg%': r['chg_pct'],
+        'Week %':  r['wk'],     'Month %':  r['mo'],
+    } for r in data])
+    styled = (df.style
+        .map(color_pct, subset=['AH Chg%', 'Day Chg%', 'Week %', 'Month %'])
+        .format({'AH Chg%':'{:+.2f}%','AH Vol':'{:.2f}M','Price':'${:,.2f}',
+                 'Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
+    col_cfg = {
+        'Symbol':  st.column_config.TextColumn('Symbol',    width=70),
+        'Name':    st.column_config.TextColumn('Name',      width=160),
+        'AH Chg%': st.column_config.TextColumn('AH Chg%',  width=90),
+        'AH Vol':  st.column_config.TextColumn('AH Vol',    width=82),
+        'Price':   st.column_config.TextColumn('Price',     width=88),
+        'Day Chg%':st.column_config.TextColumn('Day Chg%',  width=88),
+        'Week %':  st.column_config.TextColumn('Wk %',      width=76),
+        'Month %': st.column_config.TextColumn('Mo %',      width=76),
+    }
+
+else:  # Live
+    data = filtered
+    _va = [r['rel_vol'] for r in data]
+    df = pd.DataFrame([{
+        'Symbol':   r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
+        'Price':    r['price'],  'Day Chg%': r['chg_pct'],
+        'Vol (M)':  round(r['volume']/1e6, 2),
+        'Rel Vol':  r['rel_vol'],
+        'Week %':   r['wk'],    'Month %': r['mo'],
+    } for r in data])
+    va_series = pd.Series(_va, index=df.index)
+    styled = (df.style
+        .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %'])
+        .map(color_rv,  subset=['Rel Vol'])
+        .format({'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Vol (M)':'{:.2f}M',
+                 'Rel Vol':'{:.2f}x','Week %':'{:+.2f}%','Month %':'{:+.2f}%'})
+        .apply(lambda col: ['color: #16a34a; font-weight:700' if va_series.iloc[i] >= 1.0
+                            else 'color: #dc2626; font-weight:700' for i in range(len(col))],
+               subset=['Vol (M)'], axis=0))
+    col_cfg = {
+        'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
+        'Name':     st.column_config.TextColumn('Name',      width=160),
+        'Price':    st.column_config.TextColumn('Price',     width=88),
+        'Day Chg%': st.column_config.TextColumn('Day Chg%', width=88),
+        'Vol (M)':  st.column_config.TextColumn('Vol',       width=76),
+        'Rel Vol':  st.column_config.TextColumn('Rel Vol',   width=76),
+        'Week %':   st.column_config.TextColumn('Wk %',      width=76),
+        'Month %':  st.column_config.TextColumn('Mo %',      width=76),
+    }
+
+st.dataframe(styled, use_container_width=True, hide_index=True, height=560, column_config=col_cfg)
 
 # ── Footer ─────────────────────────────────────────────────────────────────
 st.markdown(f"""
