@@ -251,13 +251,14 @@ def fetch_quotes():
             t    = tickers.tickers[sym]
             info = t.fast_info
             h35  = t.history(period='35d', interval='1d')
-            h1d  = t.history(period='2d', interval='1m', prepost=True)
+            h1d  = t.history(period='8d', interval='1m', prepost=True)
 
             price = float(info.last_price or 0)
             prev  = float(info.previous_close or price)
 
             pre_chg = ah_chg = 0.0
             pre_vol = ah_vol = volume = 0
+            avg_pre_vol = avg_ah_vol = 0.0
 
             if not h1d.empty:
                 h1d.index = _safe_tz_convert(h1d.index)       # bug-fix: handle tz-naive
@@ -281,6 +282,18 @@ def fetch_quotes():
                 if not ah_bars.empty:
                     ah_vol  = int(ah_bars['Volume'].sum())
                     ah_chg  = round((float(ah_bars['Close'].iloc[-1]) - prev) / prev * 100, 2) if prev else 0
+                # Historical baselines: average pre/AH volume over prior days in the window
+                prior_pre, prior_ah = [], []
+                for d in avail_dates:
+                    if d == ref_date:
+                        continue
+                    dmask = pd.Series(h1d.index.date == d, index=h1d.index)
+                    dp = h1d[dmask & (mins <  9*60+30)]
+                    da = h1d[dmask & (mins >= 16*60)]
+                    if not dp.empty: prior_pre.append(int(dp['Volume'].sum()))
+                    if not da.empty: prior_ah.append(int(da['Volume'].sum()))
+                if prior_pre: avg_pre_vol = sum(prior_pre) / len(prior_pre)
+                if prior_ah:  avg_ah_vol  = sum(prior_ah)  / len(prior_ah)
 
             avg         = AVG_DAILY_VOL.get(sym, 1)
             # If ref_date is a past completed session, use full elapsed (1.0); else live fraction
@@ -289,8 +302,8 @@ def fetch_quotes():
             pre_e = pre_elapsed_fraction() if is_live_today else 1.0
             ah_e  = ah_elapsed_fraction()  if is_live_today else 1.0
             rel_vol     = volume / (avg * reg_e) if reg_e > 0 else 0
-            pre_rel_vol = round(pre_vol / (avg * pre_e) if pre_e > 0 else 0, 2)
-            ah_rel_vol  = round(ah_vol  / (avg * ah_e)  if ah_e  > 0 else 0, 2)
+            pre_rel_vol = round(pre_vol / (avg_pre_vol * pre_e), 2) if (avg_pre_vol > 0 and pre_e > 0) else 0
+            ah_rel_vol  = round(ah_vol  / (avg_ah_vol  * ah_e),  2) if (avg_ah_vol  > 0 and ah_e  > 0) else 0
             wk = mo = 0.0
             if not h35.empty and len(h35) >= 6:
                 wk = round((price - float(h35['Close'].iloc[-6])) / float(h35['Close'].iloc[-6]) * 100, 2)
