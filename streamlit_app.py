@@ -217,6 +217,13 @@ def fmt_vol(v):
     if v >= 1_000: return f'{v/1_000:.0f}K'
     return str(v)
 
+def _fvol(v):
+    return '—' if v == 0 else f'{v/1e6:.2f}M'
+
+def _frv(v):
+    if not isinstance(v, (int, float)) or v == 0: return '—'
+    return f'{v:.1f}x'
+
 def pct_html(v, suffix='%'):
     if v > 0: return f'<span class="gain">▲ {v:+.2f}{suffix}</span>'
     if v < 0: return f'<span class="loss">▼ {v:.2f}{suffix}</span>'
@@ -256,9 +263,18 @@ def fetch_quotes():
             price = float(info.last_price or 0)
             prev  = float(info.previous_close or price)
 
-            pre_chg = ah_chg = 0.0
+            pre_chg = 0.0
+            # Use yfinance info for pre-market price change (1m bars have no pre-mkt volume)
+            try:
+                info_dict = t.info
+                pct = info_dict.get('preMarketChangePercent', None)
+                if pct is not None:
+                    pre_chg = round(float(pct) * 100, 2)
+            except Exception:
+                pass
+            ah_chg = 0.0
             pre_vol = ah_vol = volume = 0
-            avg_pre_vol = avg_ah_vol = 0.0
+            avg_ah_vol = 0.0
 
             if not h1d.empty:
                 h1d.index = _safe_tz_convert(h1d.index)       # bug-fix: handle tz-naive
@@ -273,36 +289,29 @@ def fetch_quotes():
                 reg_bars = h1d[is_ref & (mins >= 9*60+30) & (mins < 16*60)]  # 09:30-15:59
                 ah_bars  = h1d[is_ref & (mins >= 16*60)]    # 16:00-20:00
 
-                if not pre_bars.empty:
-                    pre_vol = int(pre_bars['Volume'].sum())
-                    pre_chg = round((float(pre_bars['Close'].iloc[-1]) - prev) / prev * 100, 2) if prev else 0
-
                 volume = int(reg_bars['Volume'].sum()) if not reg_bars.empty else 0
 
                 if not ah_bars.empty:
                     ah_vol  = int(ah_bars['Volume'].sum())
                     ah_chg  = round((float(ah_bars['Close'].iloc[-1]) - prev) / prev * 100, 2) if prev else 0
                 # Historical baselines: average pre/AH volume over prior days in the window
-                prior_pre, prior_ah = [], []
+                prior_ah = []
                 for d in avail_dates:
                     if d == ref_date:
                         continue
                     dmask = pd.Series(h1d.index.date == d, index=h1d.index)
-                    dp = h1d[dmask & (mins <  9*60+30)]
                     da = h1d[dmask & (mins >= 16*60)]
-                    if not dp.empty: prior_pre.append(int(dp['Volume'].sum()))
                     if not da.empty: prior_ah.append(int(da['Volume'].sum()))
-                if prior_pre: avg_pre_vol = sum(prior_pre) / len(prior_pre)
-                if prior_ah:  avg_ah_vol  = sum(prior_ah)  / len(prior_ah)
+                if prior_ah: avg_ah_vol  = sum(prior_ah)  / len(prior_ah)
 
             avg         = AVG_DAILY_VOL.get(sym, 1)
             # If ref_date is a past completed session, use full elapsed (1.0); else live fraction
-            is_live_today = ('ref_date' in dir() and ref_date == get_et().date())
+            is_live_today = ref_date == get_et().date()
             reg_e = elapsed if is_live_today else 1.0
             pre_e = pre_elapsed_fraction() if is_live_today else 1.0
             ah_e  = ah_elapsed_fraction()  if is_live_today else 1.0
             rel_vol     = volume / (avg * reg_e) if reg_e > 0 else 0
-            pre_rel_vol = round(pre_vol / (avg_pre_vol * pre_e), 2) if (avg_pre_vol > 0 and pre_e > 0) else 0
+            pre_rel_vol = 0
             ah_rel_vol  = round(ah_vol  / (avg_ah_vol  * ah_e),  2) if (avg_ah_vol  > 0 and ah_e  > 0) else 0
             wk = mo = 0.0
             if not h35.empty and len(h35) >= 6:
@@ -327,7 +336,7 @@ def fetch_quotes():
 # ── Auto-refresh ───────────────────────────────────────────────────────────
 try:
     from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=30_000, key='qqq_refresh')
+    st_autorefresh(interval=300_000, key='qqq_refresh')
 except ImportError:
     pass
 
@@ -354,14 +363,21 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+spikes = [r for r in rows if is_open and r.get('rel_vol', 0) >= 2.0]
+if spikes:
+    spike_parts = ' &nbsp;|&nbsp; '.join(
+        f"<b>{r['symbol']}</b> {r['rel_vol']:.1f}x" for r in sorted(spikes, key=lambda x: x['rel_vol'], reverse=True)
+    )
+    st.markdown(f"""
+<div style="background:#fef2f2;border:1.5px solid #dc2626;border-radius:10px;padding:0.7rem 1.2rem;margin-bottom:1rem;display:flex;align-items:center;gap:0.8rem;">
+  <span style="font-size:1.2rem;">🚨</span>
+  <span style="color:#dc2626;font-weight:700;font-size:0.9rem;">VOLUME SPIKE ALERT &nbsp;—&nbsp; {spike_parts}</span>
+</div>
+""", unsafe_allow_html=True)
+
 # ── KPI cards ──────────────────────────────────────────────────────────────
-gainers    = sorted(rows, key=lambda r: r['chg_pct'],  reverse=True)
-pre_movers = sorted(rows, key=lambda r: r['pre_chg'],  reverse=True)
-ah_movers  = sorted(rows, key=lambda r: r['ah_chg'],   reverse=True)
-best, worst    = gainers[0], gainers[-1]
-pre_best  = next((r for r in pre_movers if r['pre_chg'] != 0), pre_movers[0])
-pre_worst = next((r for r in reversed(pre_movers) if r['pre_chg'] != 0), pre_movers[-1])
-ah_best   = next((r for r in ah_movers  if r['ah_chg']  != 0), ah_movers[0])
+gainers = sorted(rows, key=lambda r: r['chg_pct'], reverse=True)
+best, worst = gainers[0], gainers[-1]
 avg_rv = sum(r['rel_vol'] for r in rows) / len(rows)
 spikes = sum(1 for r in rows if r['rel_vol'] >= 2.0)
 
@@ -385,21 +401,6 @@ st.markdown(f"""
     <div class="kpi-sub {cls(worst['chg_pct'])}">{worst['chg_pct']:+.2f}% today</div>
   </div>
   <div class="kpi-card">
-    <div class="kpi-label">Pre-Mkt Leader</div>
-    <div class="kpi-value {cls(pre_best['pre_chg'])}">{pre_best['symbol']}</div>
-    <div class="kpi-sub {cls(pre_best['pre_chg'])}">{pre_best['pre_chg']:+.2f}% pre-mkt</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-label">Pre-Mkt Laggard</div>
-    <div class="kpi-value {cls(pre_worst['pre_chg'])}">{pre_worst['symbol']}</div>
-    <div class="kpi-sub {cls(pre_worst['pre_chg'])}">{pre_worst['pre_chg']:+.2f}% pre-mkt</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-label">After-Hours Leader</div>
-    <div class="kpi-value {cls(ah_best['ah_chg'])}">{ah_best['symbol']}</div>
-    <div class="kpi-sub {cls(ah_best['ah_chg'])}">{ah_best['ah_chg']:+.2f}% AH</div>
-  </div>
-  <div class="kpi-card">
     <div class="kpi-label">Avg Rel Vol</div>
     <div class="kpi-value">{avg_rv:.2f}x</div>
     <div class="kpi-sub">{spikes} spiking ≥ 2x</div>
@@ -413,114 +414,52 @@ def color_pct(val):
     return 'color: #16a34a; font-weight:700' if val > 0 else 'color: #dc2626; font-weight:700'
 
 def color_rv(val):
+    if not isinstance(val, (int, float)): return 'color: #94a3b8'
     if val >= 2.0:   return 'color: #dc2626; font-weight:700; background:#fef2f2; border-radius:4px'
     if val >= 1.5:   return 'color: #ea580c; font-weight:700; background:#fff7ed; border-radius:4px'
     if val >= 0.8:   return 'color: #2563eb; font-weight:700; background:#eff6ff; border-radius:4px'
     return 'color: #94a3b8'
 
 # ── Session selector + Rel Vol filter ──────────────────────────────────────
-ctrl_col, filt_col = st.columns([2, 1])
-with ctrl_col:
-    session = st.segmented_control(
-        'Session', ['🌅 Pre-Market', '📈 Live', '🌙 After Hours'],
-        default='📈 Live', label_visibility='collapsed'
-    )
+filt_col = st.columns([1])[0]
 with filt_col:
     min_rv = st.selectbox('Min Rel Vol', [0.0, 0.5, 1.0, 1.5, 2.0], index=0,
                           format_func=lambda x: f'Rel Vol >= {x}x' if x > 0 else 'All Symbols')
 
 if min_rv > 0:
-    if session == '🌅 Pre-Market':
-        filtered = [r for r in rows if r['pre_rel_vol'] >= min_rv]
-    elif session == '🌙 After Hours':
-        filtered = [r for r in rows if r['ah_rel_vol'] >= min_rv]
-    else:
-        filtered = [r for r in rows if r['rel_vol'] >= min_rv]
+    filtered = [r for r in rows if r['rel_vol'] >= min_rv]
 else:
     filtered = rows
 
 # ── Build view per session ──────────────────────────────────────────────────
-if session == '🌅 Pre-Market':
-    data = sorted(filtered, key=lambda r: abs(r['pre_chg']), reverse=True)
-    df = pd.DataFrame([{
-        'Symbol':   r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
-        'Pre Chg%': r['pre_chg'], 'Pre Vol': round(r['pre_vol']/1e6, 2),
-        'Rel Vol':  r['pre_rel_vol'],
-        'Price':    r['price'],   'Day Chg%': r['chg_pct'],
-        'Week %':   r['wk'],      'Month %':  r['mo'],
-    } for r in data])
-    styled = (df.style
-        .map(color_pct, subset=['Pre Chg%', 'Day Chg%', 'Week %', 'Month %'])
-        .map(color_rv,  subset=['Rel Vol'])
-        .format({'Pre Chg%':'{:+.2f}%','Pre Vol':'{:.2f}M','Rel Vol': lambda v: f'{v:.1f}x' if v > 0 else '—',
-                 'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
-    col_cfg = {
-        'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
-        'Name':     st.column_config.TextColumn('Name',      width=160),
-        'Pre Chg%': st.column_config.TextColumn('Pre Chg%', width=90),
-        'Pre Vol':  st.column_config.TextColumn('Pre Vol',  width=82),
-        'Rel Vol':  st.column_config.TextColumn('Rel Vol',   width=76),
-        'Price':    st.column_config.TextColumn('Price',     width=88),
-        'Day Chg%': st.column_config.TextColumn('Day Chg%', width=88),
-        'Week %':   st.column_config.TextColumn('Wk %',      width=76),
-        'Month %':  st.column_config.TextColumn('Mo %',      width=76),
-    }
-
-elif session == '🌙 After Hours':
-    data = sorted(filtered, key=lambda r: abs(r['ah_chg']), reverse=True)
-    df = pd.DataFrame([{
-        'Symbol':  r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
-        'AH Chg%': r['ah_chg'], 'AH Vol': round(r['ah_vol']/1e6, 2),
-        'Rel Vol': r['ah_rel_vol'],
-        'Price':   r['price'],  'Day Chg%': r['chg_pct'],
-        'Week %':  r['wk'],     'Month %':  r['mo'],
-    } for r in data])
-    styled = (df.style
-        .map(color_pct, subset=['AH Chg%', 'Day Chg%', 'Week %', 'Month %'])
-        .map(color_rv,  subset=['Rel Vol'])
-        .format({'AH Chg%':'{:+.2f}%','AH Vol':'{:.2f}M','Rel Vol': lambda v: f'{v:.1f}x' if v > 0 else '—',
-                 'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
-    col_cfg = {
-        'Symbol':  st.column_config.TextColumn('Symbol',    width=70),
-        'Name':    st.column_config.TextColumn('Name',      width=160),
-        'AH Chg%': st.column_config.TextColumn('AH Chg%',  width=90),
-        'AH Vol':  st.column_config.TextColumn('AH Vol',    width=82),
-        'Rel Vol': st.column_config.TextColumn('Rel Vol',   width=76),
-        'Price':   st.column_config.TextColumn('Price',     width=88),
-        'Day Chg%':st.column_config.TextColumn('Day Chg%',  width=88),
-        'Week %':  st.column_config.TextColumn('Wk %',      width=76),
-        'Month %': st.column_config.TextColumn('Mo %',      width=76),
-    }
-
-else:  # Live
-    data = filtered
-    _va = [r['rel_vol'] for r in data]
-    df = pd.DataFrame([{
-        'Symbol':   r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
-        'Price':    r['price'],  'Day Chg%': r['chg_pct'],
-        'Vol (M)':  round(r['volume']/1e6, 2),
-        'Rel Vol':  r['rel_vol'],
-        'Week %':   r['wk'],    'Month %': r['mo'],
-    } for r in data])
-    va_series = pd.Series(_va, index=df.index)
-    styled = (df.style
-        .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %'])
-        .map(color_rv,  subset=['Rel Vol'])
-        .format({'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Vol (M)':'{:.2f}M',
-                 'Rel Vol': lambda v: f'{v:.1f}x' if v > 0 else '—','Week %':'{:+.2f}%','Month %':'{:+.2f}%'})
-        .apply(lambda col: ['color: #16a34a; font-weight:700' if va_series.iloc[i] >= 1.0
-                            else 'color: #dc2626; font-weight:700' for i in range(len(col))],
-               subset=['Vol (M)'], axis=0))
-    col_cfg = {
-        'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
-        'Name':     st.column_config.TextColumn('Name',      width=160),
-        'Price':    st.column_config.TextColumn('Price',     width=88),
-        'Day Chg%': st.column_config.TextColumn('Day Chg%', width=88),
-        'Vol (M)':  st.column_config.TextColumn('Vol',       width=76),
-        'Rel Vol':  st.column_config.TextColumn('Rel Vol',   width=76),
-        'Week %':   st.column_config.TextColumn('Wk %',      width=76),
-        'Month %':  st.column_config.TextColumn('Mo %',      width=76),
-    }
+data = filtered
+_va = [r['rel_vol'] for r in data]
+df = pd.DataFrame([{
+    'Symbol':   r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
+    'Price':    r['price'],  'Day Chg%': r['chg_pct'],
+    'Vol (M)':  _fvol(r['volume']),
+    'Rel Vol':  r['rel_vol'],
+    'Week %':   r['wk'],    'Month %': r['mo'],
+} for r in data])
+va_series = pd.Series(_va, index=df.index)
+styled = (df.style
+    .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %'])
+    .map(color_rv,  subset=['Rel Vol'])
+    .format({'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Rel Vol': _frv,
+             'Week %':'{:+.2f}%','Month %':'{:+.2f}%'})
+    .apply(lambda col: ['color: #16a34a; font-weight:700' if va_series.iloc[i] >= 1.0
+                        else 'color: #dc2626; font-weight:700' for i in range(len(col))],
+           subset=['Vol (M)'], axis=0))
+col_cfg = {
+    'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
+    'Name':     st.column_config.TextColumn('Name',      width=160),
+    'Price':    st.column_config.TextColumn('Price',     width=88),
+    'Day Chg%': st.column_config.TextColumn('Day Chg%', width=88),
+    'Vol (M)':  st.column_config.TextColumn('Vol',       width=76),
+    'Rel Vol':  st.column_config.TextColumn('Rel Vol',   width=76),
+    'Week %':   st.column_config.TextColumn('Wk %',      width=76),
+    'Month %':  st.column_config.TextColumn('Mo %',      width=76),
+}
 
 st.dataframe(styled, use_container_width=True, hide_index=True, height=560, column_config=col_cfg)
 
