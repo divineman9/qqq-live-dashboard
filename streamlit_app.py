@@ -194,6 +194,24 @@ def elapsed_fraction():
     if et >= c: return 1.0
     return (et-o).seconds / (390*60)
 
+def pre_elapsed_fraction():
+    et = get_et()
+    if et.weekday() >= 5: return 1.0
+    pre_start = et.replace(hour=4, minute=0, second=0, microsecond=0)
+    pre_end   = et.replace(hour=9, minute=30, second=0, microsecond=0)
+    if et <= pre_start: return 0.01
+    if et >= pre_end:   return 1.0
+    return (et - pre_start).seconds / (330 * 60)
+
+def ah_elapsed_fraction():
+    et = get_et()
+    if et.weekday() >= 5: return 1.0
+    ah_start = et.replace(hour=16, minute=0, second=0, microsecond=0)
+    ah_end   = et.replace(hour=20, minute=0, second=0, microsecond=0)
+    if et <= ah_start: return 0.01
+    if et >= ah_end:   return 1.0
+    return (et - ah_start).seconds / (240 * 60)
+
 def fmt_vol(v):
     if v >= 1_000_000: return f'{v/1_000_000:.1f}M'
     if v >= 1_000: return f'{v/1_000:.0f}K'
@@ -261,8 +279,12 @@ def fetch_quotes():
                     ah_vol  = int(ah_bars['Volume'].sum())
                     ah_chg  = round((float(ah_bars['Close'].iloc[-1]) - prev) / prev * 100, 2) if prev else 0
 
-            avg     = AVG_DAILY_VOL.get(sym, 1)
-            rel_vol = volume / (avg * elapsed) if elapsed > 0 else 0
+            avg         = AVG_DAILY_VOL.get(sym, 1)
+            rel_vol     = volume / (avg * elapsed) if elapsed > 0 else 0
+            pre_elapsed = pre_elapsed_fraction()
+            ah_elapsed  = ah_elapsed_fraction()
+            pre_rel_vol = round(pre_vol / (avg * pre_elapsed) if pre_elapsed > 0 else 0, 2)
+            ah_rel_vol  = round(ah_vol  / (avg * ah_elapsed)  if ah_elapsed  > 0 else 0, 2)
             wk = mo = 0.0
             if not h35.empty and len(h35) >= 6:
                 wk = round((price - float(h35['Close'].iloc[-6])) / float(h35['Close'].iloc[-6]) * 100, 2)
@@ -273,13 +295,14 @@ def fetch_quotes():
                 'pre_chg': pre_chg, 'pre_vol': pre_vol,
                 'ah_chg':  ah_chg,  'ah_vol':  ah_vol,
                 'volume': volume, 'rel_vol': round(rel_vol,2),
+                'pre_rel_vol': pre_rel_vol, 'ah_rel_vol': ah_rel_vol,
                 'elapsed': elapsed,                            # carry elapsed to avoid drift
                 'wk': wk, 'mo': mo,
             })
         except Exception:
             rows.append({'rank':RANKS.get(sym,99),'symbol':sym,'price':0,'chg_pct':0,
                          'pre_chg':0,'pre_vol':0,'ah_chg':0,'ah_vol':0,
-                         'volume':0,'rel_vol':0,'elapsed':elapsed,'wk':0,'mo':0})
+                         'volume':0,'rel_vol':0,'pre_rel_vol':0,'ah_rel_vol':0,'elapsed':elapsed,'wk':0,'mo':0})
     return sorted(rows, key=lambda r: r['rank'])
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────
@@ -395,7 +418,7 @@ if session == '🌅 Pre-Market':
     df = pd.DataFrame([{
         'Symbol':   r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
         'Pre Chg%': r['pre_chg'], 'Pre Vol': round(r['pre_vol']/1e6, 2),
-        'Rel Vol':  r['rel_vol'],
+        'Rel Vol':  r['pre_rel_vol'],
         'Price':    r['price'],   'Day Chg%': r['chg_pct'],
         'Week %':   r['wk'],      'Month %':  r['mo'],
     } for r in data])
@@ -421,7 +444,7 @@ elif session == '🌙 After Hours':
     df = pd.DataFrame([{
         'Symbol':  r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
         'AH Chg%': r['ah_chg'], 'AH Vol': round(r['ah_vol']/1e6, 2),
-        'Rel Vol': r['rel_vol'],
+        'Rel Vol': r['ah_rel_vol'],
         'Price':   r['price'],  'Day Chg%': r['chg_pct'],
         'Week %':  r['wk'],     'Month %':  r['mo'],
     } for r in data])
