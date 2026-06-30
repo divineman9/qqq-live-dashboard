@@ -395,18 +395,21 @@ if session == '🌅 Pre-Market':
     df = pd.DataFrame([{
         'Symbol':   r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
         'Pre Chg%': r['pre_chg'], 'Pre Vol': round(r['pre_vol']/1e6, 2),
+        'Rel Vol':  r['rel_vol'],
         'Price':    r['price'],   'Day Chg%': r['chg_pct'],
         'Week %':   r['wk'],      'Month %':  r['mo'],
     } for r in data])
     styled = (df.style
         .map(color_pct, subset=['Pre Chg%', 'Day Chg%', 'Week %', 'Month %'])
-        .format({'Pre Chg%':'{:+.2f}%','Pre Vol':'{:.2f}M','Price':'${:,.2f}',
-                 'Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
+        .map(color_rv,  subset=['Rel Vol'])
+        .format({'Pre Chg%':'{:+.2f}%','Pre Vol':'{:.2f}M','Rel Vol':'{:.1f}x',
+                 'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
     col_cfg = {
         'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
         'Name':     st.column_config.TextColumn('Name',      width=160),
         'Pre Chg%': st.column_config.TextColumn('Pre Chg%', width=90),
         'Pre Vol':  st.column_config.TextColumn('Pre Vol',  width=82),
+        'Rel Vol':  st.column_config.TextColumn('Rel Vol',   width=76),
         'Price':    st.column_config.TextColumn('Price',     width=88),
         'Day Chg%': st.column_config.TextColumn('Day Chg%', width=88),
         'Week %':   st.column_config.TextColumn('Wk %',      width=76),
@@ -418,18 +421,21 @@ elif session == '🌙 After Hours':
     df = pd.DataFrame([{
         'Symbol':  r['symbol'], 'Name': NAMES.get(r['symbol'], r['symbol']),
         'AH Chg%': r['ah_chg'], 'AH Vol': round(r['ah_vol']/1e6, 2),
+        'Rel Vol': r['rel_vol'],
         'Price':   r['price'],  'Day Chg%': r['chg_pct'],
         'Week %':  r['wk'],     'Month %':  r['mo'],
     } for r in data])
     styled = (df.style
         .map(color_pct, subset=['AH Chg%', 'Day Chg%', 'Week %', 'Month %'])
-        .format({'AH Chg%':'{:+.2f}%','AH Vol':'{:.2f}M','Price':'${:,.2f}',
-                 'Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
+        .map(color_rv,  subset=['Rel Vol'])
+        .format({'AH Chg%':'{:+.2f}%','AH Vol':'{:.2f}M','Rel Vol':'{:.1f}x',
+                 'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
     col_cfg = {
         'Symbol':  st.column_config.TextColumn('Symbol',    width=70),
         'Name':    st.column_config.TextColumn('Name',      width=160),
         'AH Chg%': st.column_config.TextColumn('AH Chg%',  width=90),
         'AH Vol':  st.column_config.TextColumn('AH Vol',    width=82),
+        'Rel Vol': st.column_config.TextColumn('Rel Vol',   width=76),
         'Price':   st.column_config.TextColumn('Price',     width=88),
         'Day Chg%':st.column_config.TextColumn('Day Chg%',  width=88),
         'Week %':  st.column_config.TextColumn('Wk %',      width=76),
