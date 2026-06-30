@@ -410,7 +410,15 @@ with filt_col:
     min_rv = st.selectbox('Min Rel Vol', [0.0, 0.5, 1.0, 1.5, 2.0], index=0,
                           format_func=lambda x: f'Rel Vol >= {x}x' if x > 0 else 'All Symbols')
 
-filtered = [r for r in rows if r['rel_vol'] >= min_rv] if min_rv > 0 else rows
+if min_rv > 0:
+    if session == '🌅 Pre-Market':
+        filtered = [r for r in rows if r['pre_rel_vol'] >= min_rv]
+    elif session == '🌙 After Hours':
+        filtered = [r for r in rows if r['ah_rel_vol'] >= min_rv]
+    else:
+        filtered = [r for r in rows if r['rel_vol'] >= min_rv]
+else:
+    filtered = rows
 
 # ── Build view per session ──────────────────────────────────────────────────
 if session == '🌅 Pre-Market':
@@ -425,7 +433,7 @@ if session == '🌅 Pre-Market':
     styled = (df.style
         .map(color_pct, subset=['Pre Chg%', 'Day Chg%', 'Week %', 'Month %'])
         .map(color_rv,  subset=['Rel Vol'])
-        .format({'Pre Chg%':'{:+.2f}%','Pre Vol':'{:.2f}M','Rel Vol':'{:.1f}x',
+        .format({'Pre Chg%':'{:+.2f}%','Pre Vol':'{:.2f}M','Rel Vol': lambda v: f'{v:.1f}x' if v > 0 else '—',
                  'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
     col_cfg = {
         'Symbol':   st.column_config.TextColumn('Symbol',    width=70),
@@ -451,7 +459,7 @@ elif session == '🌙 After Hours':
     styled = (df.style
         .map(color_pct, subset=['AH Chg%', 'Day Chg%', 'Week %', 'Month %'])
         .map(color_rv,  subset=['Rel Vol'])
-        .format({'AH Chg%':'{:+.2f}%','AH Vol':'{:.2f}M','Rel Vol':'{:.1f}x',
+        .format({'AH Chg%':'{:+.2f}%','AH Vol':'{:.2f}M','Rel Vol': lambda v: f'{v:.1f}x' if v > 0 else '—',
                  'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Week %':'{:+.2f}%','Month %':'{:+.2f}%'}))
     col_cfg = {
         'Symbol':  st.column_config.TextColumn('Symbol',    width=70),
@@ -480,7 +488,7 @@ else:  # Live
         .map(color_pct, subset=['Day Chg%', 'Week %', 'Month %'])
         .map(color_rv,  subset=['Rel Vol'])
         .format({'Price':'${:,.2f}','Day Chg%':'{:+.2f}%','Vol (M)':'{:.2f}M',
-                 'Rel Vol':'{:.2f}x','Week %':'{:+.2f}%','Month %':'{:+.2f}%'})
+                 'Rel Vol': lambda v: f'{v:.1f}x' if v > 0 else '—','Week %':'{:+.2f}%','Month %':'{:+.2f}%'})
         .apply(lambda col: ['color: #16a34a; font-weight:700' if va_series.iloc[i] >= 1.0
                             else 'color: #dc2626; font-weight:700' for i in range(len(col))],
                subset=['Vol (M)'], axis=0))
