@@ -263,11 +263,14 @@ def fetch_quotes():
                 h1d.index = _safe_tz_convert(h1d.index)       # bug-fix: handle tz-naive
                 today     = get_et().date()
                 mins      = _min_of_day(h1d.index)
-                is_today  = pd.Series(h1d.index.date == today, index=h1d.index)
+                # Fall back to most recent available trading day so data shows when markets are closed
+                avail_dates = sorted(set(h1d.index.date))
+                ref_date    = avail_dates[-1] if avail_dates else today
+                is_ref      = pd.Series(h1d.index.date == ref_date, index=h1d.index)
 
-                pre_bars = h1d[is_today & (mins <  9*60+30)]  # 04:00–09:29
-                reg_bars = h1d[is_today & (mins >= 9*60+30) & (mins < 16*60)]  # 09:30–15:59
-                ah_bars  = h1d[is_today & (mins >= 16*60)]    # 16:00–20:00
+                pre_bars = h1d[is_ref & (mins <  9*60+30)]  # 04:00-09:29
+                reg_bars = h1d[is_ref & (mins >= 9*60+30) & (mins < 16*60)]  # 09:30-15:59
+                ah_bars  = h1d[is_ref & (mins >= 16*60)]    # 16:00-20:00
 
                 if not pre_bars.empty:
                     pre_vol = int(pre_bars['Volume'].sum())
@@ -280,11 +283,14 @@ def fetch_quotes():
                     ah_chg  = round((float(ah_bars['Close'].iloc[-1]) - prev) / prev * 100, 2) if prev else 0
 
             avg         = AVG_DAILY_VOL.get(sym, 1)
-            rel_vol     = volume / (avg * elapsed) if elapsed > 0 else 0
-            pre_elapsed = pre_elapsed_fraction()
-            ah_elapsed  = ah_elapsed_fraction()
-            pre_rel_vol = round(pre_vol / (avg * pre_elapsed) if pre_elapsed > 0 else 0, 2)
-            ah_rel_vol  = round(ah_vol  / (avg * ah_elapsed)  if ah_elapsed  > 0 else 0, 2)
+            # If ref_date is a past completed session, use full elapsed (1.0); else live fraction
+            is_live_today = ('ref_date' in dir() and ref_date == get_et().date())
+            reg_e = elapsed if is_live_today else 1.0
+            pre_e = pre_elapsed_fraction() if is_live_today else 1.0
+            ah_e  = ah_elapsed_fraction()  if is_live_today else 1.0
+            rel_vol     = volume / (avg * reg_e) if reg_e > 0 else 0
+            pre_rel_vol = round(pre_vol / (avg * pre_e) if pre_e > 0 else 0, 2)
+            ah_rel_vol  = round(ah_vol  / (avg * ah_e)  if ah_e  > 0 else 0, 2)
             wk = mo = 0.0
             if not h35.empty and len(h35) >= 6:
                 wk = round((price - float(h35['Close'].iloc[-6])) / float(h35['Close'].iloc[-6]) * 100, 2)
